@@ -63,6 +63,16 @@ def handle_photo(message):
     file_info = bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
     
+    # Скачиваем фото
+    file_response = requests.get(file_url)
+    if file_response.status_code != 200:
+        bot.send_message(chat_id, "Не удалось скачать фото 😔")
+        return
+    
+    # Конвертируем фото в base64
+    image_base64 = base64.b64encode(file_response.content).decode('utf-8')
+    image_data_url = f"data:image/jpeg;base64,{image_base64}"
+    
     # Запрос к OpenRouter
     response = requests.post(
         url="https://openrouter.ai/api/v1/chat/completions",
@@ -84,7 +94,7 @@ def handle_photo(message):
                         },
                         {
                             "type": "image_url",
-                            "image_url": {"url": file_url}
+                            "image_url": {"url": image_data_url}
                         }
                     ]
                 }
@@ -97,7 +107,7 @@ def handle_photo(message):
         result = response.json()
         answer = result["choices"][0]["message"]["content"]
         
-        # Парсим калории из ответа (предполагаем, что в ответе есть число калорий)
+        # Парсим калории из ответа
         try:
             calories = int(''.join(filter(str.isdigit, answer.split("калорий")[0].split()[-1])))
             users_data[chat_id]["calories"] += calories
