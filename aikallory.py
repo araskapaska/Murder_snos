@@ -8,6 +8,7 @@ import os
 BOT_TOKEN = "7285681448:AAF0chLLhp4k0uCJbaYn_-yO09wSY1wY-aw"
 # Твой ключ от OpenRouter
 OPENROUTER_API_KEY = "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"
+IMGBB_API_KEY = "5acb9592686c713a75ffca1451572e4d"
 
 # Инициализация бота
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -69,9 +70,19 @@ def handle_photo(message):
         bot.send_message(chat_id, "Не удалось скачать фото 😔")
         return
     
-    # Конвертируем фото в base64
-    image_base64 = base64.b64encode(file_response.content).decode('utf-8')
-    image_data_url = f"data:image/jpeg;base64,{image_base64}"
+    # Загружаем на imgbb
+    imgbb_url = "https://api.imgbb.com/1/upload"
+    imgbb_payload = {
+        "key": IMGBB_API_KEY,
+        "image": file_response.content,
+    }
+    imgbb_response = requests.post(imgbb_url, files={"image": file_response.content})
+    
+    if imgbb_response.status_code != 200:
+        bot.send_message(chat_id, "Не удалось загрузить фото на хостинг 😔")
+        return
+    
+    image_url = imgbb_response.json()["data"]["url"]
     
     # Запрос к OpenRouter
     response = requests.post(
@@ -94,7 +105,7 @@ def handle_photo(message):
                         },
                         {
                             "type": "image_url",
-                            "image_url": {"url": image_data_url}
+                            "image_url": {"url": image_url}
                         }
                     ]
                 }
@@ -133,5 +144,5 @@ def handle_water(message):
     main_menu(chat_id)
 
 # Запуск бота
-print("бот включен! ") 
+print(" bot") 
 bot.polling(none_stop=True)
