@@ -133,4 +133,5 @@ def handle_water(message):
     main_menu(chat_id)
 
 # Запуск бота
+print("бот включен! ") 
 bot.polling(none_stop=True)
