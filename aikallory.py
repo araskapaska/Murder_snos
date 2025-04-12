@@ -7,142 +7,186 @@ import os
 # Токен твоего бота от BotFather
 BOT_TOKEN = "7285681448:AAF0chLLhp4k0uCJbaYn_-yO09wSY1wY-aw"
 # Твой ключ от OpenRouter
-OPENROUTER_API_KEY = "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"
-IMGBB_API_KEY = "5acb9592686c713a75ffca1451572e4d"
+# Ключ для OpenRouter
+OPENROUTER_API_KEY = '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'
 
-# Инициализация бота
-bot = telebot.TeleBot(BOT_TOKEN)
+# Подключение к базе данных SQLite
+conn = sqlite3.connect('calorie_tracker.db', check_same_thread=False)
+cursor = conn.cursor()
 
-# Словарь для хранения данных пользователей
-users_data = {}
+# Создание таблиц
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        daily_limit INTEGER DEFAULT 1200,
+        current_date TEXT
+    )
+''')
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS food_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        date TEXT,
+        food_name TEXT,
+        calories INTEGER,
+        protein INTEGER,
+        fat INTEGER,
+        carbs INTEGER
+    )
+''')
+conn.commit()
 
-# Главное меню
-def main_menu(chat_id):
-    user_data = users_data.get(chat_id, {"calories": 0, "water": 0})
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn1 = types.KeyboardButton("Я съел что-то 🍽️")
-    btn2 = types.KeyboardButton("Попил воды 💧")
-    markup.add(btn1, btn2)
-    
-    calories = user_data["calories"]
-    water = user_data["water"]
-    bot.send_message(chat_id, 
-                    f"Твои калории: {calories} ккал\n"
-                    f"Выпито воды: {water} мл / 2000 мл",
-                    reply_markup=markup)
+# Функция для получения текущей даты
+def get_current_date():
+    return str(date.today())
 
-# Обработка команды /start
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    chat_id = message.chat.id
-    if chat_id not in users_data:
-        users_data[chat_id] = {"calories": 0, "water": 0}
-    bot.reply_to(message, "Привет! Я помогу считать калории и воду 😊")
-    main_menu(chat_id)
+# Функция для проверки и обновления даты
+def check_and_reset_date(user_id):
+    cursor.execute('SELECT current_date FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    current_date = get_current_date()
+    
+    if result is None:
+        cursor.execute('INSERT INTO users (user_id, current_date) VALUES (?, ?)', 
+                      (user_id, current_date))
+        conn.commit()
+    elif result[0] != current_date:
+        cursor.execute('UPDATE users SET current_date = ?, daily_limit = 1200 WHERE user_id = ?', 
+                      (current_date, user_id))
+        cursor.execute('DELETE FROM food_log WHERE user_id = ? AND date != ?', 
+                      (user_id, current_date))
+        conn.commit()
 
-# Обработка кнопок меню
-@bot.message_handler(content_types=['text'])
-def handle_text(message):
-    chat_id = message.chat.id
-    if chat_id not in users_data:
-        users_data[chat_id] = {"calories": 0, "water": 0}
-    
-    if message.text == "Я съел что-то 🍽️":
-        bot.send_message(chat_id, "Пришли фото того, что ты съел!")
-    elif message.text == "Попил воды 💧":
-        bot.send_message(chat_id, "Сколько мл воды ты выпил?")
-    else:
-        main_menu(chat_id)
+# Функция для получения текущего потребления калорий
+def get_daily_calories(user_id):
+    current_date = get_current_date()
+    cursor.execute('SELECT SUM(calories) FROM food_log WHERE user_id = ? AND date = ?', 
+                  (user_id, current_date))
+    result = cursor.fetchone()
+    return result[0] if result[0] is not None else 0
 
-# Обработка фото
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    chat_id = message.chat.id
-    
-    # Получаем файл фото
-    file_id = message.photo[-1].file_id
-    file_info = bot.get_file(file_id)
-    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-    
-    # Скачиваем фото
-    file_response = requests.get(file_url)
-    if file_response.status_code != 200:
-        bot.send_message(chat_id, "Не удалось скачать фото 😔")
-        return
-    
-    # Загружаем на imgbb
-    imgbb_url = "https://api.imgbb.com/1/upload"
-    imgbb_payload = {
-        "key": IMGBB_API_KEY,
-        "image": file_response.content,
-    }
-    imgbb_response = requests.post(imgbb_url, files={"image": file_response.content})
-    
-    if imgbb_response.status_code != 200:
-        bot.send_message(chat_id, "Не удалось загрузить фото на хостинг 😔")
-        return
-    
-    image_url = imgbb_response.json()["data"]["url"]
-    
-    # Запрос к OpenRouter
+# Функция для запроса к OpenRouter
+def get_food_info(food_name):
     response = requests.post(
         url="https://openrouter.ai/api/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost",
-            "X-Title": "CalorieCounterBot"
         },
         data=json.dumps({
             "model": "google/gemini-2.5-pro-exp-03-25:free",
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Привет, ты ассистент в моём приложении, которое помогает считать калории. Вот фото, что съел пользователь. Опиши, что это, чем оно полезно и сколько примерно в нём калорий. Без лишнего текста."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": image_url}
-                        }
-                    ]
+                    "content": f"Привет, ты ассистент в моём приложении для мерки каллорий. Пользователь съел: {food_name}. Пришли в формате JSON приблизительные данные о продукте (к|б|ж|у)"
                 }
             ]
         })
     )
     
-    # Обработка ответа от нейросети
     if response.status_code == 200:
-        result = response.json()
-        answer = result["choices"][0]["message"]["content"]
-        
-        # Парсим калории из ответа
+        data = response.json()
         try:
-            calories = int(''.join(filter(str.isdigit, answer.split("калорий")[0].split()[-1])))
-            users_data[chat_id]["calories"] += calories
+            # Предполагаем, что ответ приходит в формате JSON внутри content
+            content = json.loads(data['choices'][0]['message']['content'])
+            return content
         except:
-            calories = 0
-        
-        bot.send_message(chat_id, answer)
-        main_menu(chat_id)
-    else:
-        bot.send_message(chat_id, "Не получилось распознать еду 😔 Попробуй ещё раз!")
+            return None
+    return None
 
-# Обработка ввода воды
-@bot.message_handler(content_types=['text'], regexp=r'^\d+$')
-def handle_water(message):
-    chat_id = message.chat.id
-    water_ml = int(message.text)
-    users_data[chat_id]["water"] += water_ml
+# Обработчик команды /start
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    user_id = message.from_user.id
+    check_and_reset_date(user_id)
     
-    water_total = users_data[chat_id]["water"]
-    bot.send_message(chat_id, f"Записал! Ты выпил {water_ml} мл. Всего: {water_total}/2000 мл 💧")
-    if water_total >= 2000:
-        bot.send_message(chat_id, "Ура! Цель на день достигнута 🎉")
-    main_menu(chat_id)
+    # Создание клавиатуры
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = telebot.types.KeyboardButton("Можно")
+    btn2 = telebot.types.KeyboardButton("Назначить другой рацион")
+    markup.add(btn1, btn2)
+    
+    daily_calories = get_daily_calories(user_id)
+    cursor.execute('SELECT daily_limit FROM users WHERE user_id = ?', (user_id,))
+    limit = cursor.fetchone()[0]
+    
+    bot.reply_to(message, 
+                f"Сегодня ты съел: {daily_calories} ккал (из {limit} ккал)",
+                reply_markup=markup)
+
+# Обработчик кнопок
+@bot.message_handler(content_types=['text'])
+def handle_text(message):
+    user_id = message.from_user.id
+    check_and_reset_date(user_id)
+    
+    cursor.execute('SELECT daily_limit FROM users WHERE user_id = ?', (user_id,))
+    limit = cursor.fetchone()[0]
+    
+    if message.text == "Можно":
+        bot.reply_to(message, "Напиши, что ты съел")
+        bot.register_next_step_handler(message, add_food)
+    elif message.text == "Назначить другой рацион":
+        bot.reply_to(message, "Введи новый лимит калорий (в ккал)")
+        bot.register_next_step_handler(message, set_new_limit)
+    else:
+        bot.reply_to(message, "Пожалуйста, используй кнопки")
+
+# Функция добавления еды
+def add_food(message):
+    user_id = message.from_user.id
+    food_name = message.text
+    current_date = get_current_date()
+    
+    # Запрос к OpenRouter
+    food_info = get_food_info(food_name)
+    
+    if food_info and all(key in food_info for key in ['к', 'б', 'ж', 'у']):
+        calories = food_info['к']
+        protein = food_info['б']
+        fat = food_info['ж']
+        carbs = food_info['у']
+        
+        # Сохранение в базу
+        cursor.execute('''
+            INSERT INTO food_log (user_id, date, food_name, calories, protein, fat, carbs)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, current_date, food_name, calories, protein, fat, carbs))
+        conn.commit()
+        
+        # Проверка лимита
+        daily_calories = get_daily_calories(user_id)
+        cursor.execute('SELECT daily_limit FROM users WHERE user_id = ?', (user_id,))
+        limit = cursor.fetchone()[0]
+        
+        response = f"Добавлено: {food_name}\n"
+        response += f"Калории: {calories} ккал\n"
+        response += f"Белки: {protein} г\n"
+        response += f"Жиры: {fat} г\n"
+        response += f"Углеводы: {carbs} г\n"
+        response += f"Сегодня съедено: {daily_calories} ккал (из {limit} ккал)"
+        
+        if daily_calories > limit:
+            response += "\n⚠️ Внимание! Ты превысил дневной лимит калорий!"
+        
+        bot.reply_to(message, response)
+    else:
+        bot.reply_to(message, "Не удалось получить информацию о продукте. Попробуй еще раз.")
+
+# Функция установки нового лимита
+def set_new_limit(message):
+    user_id = message.from_user.id
+    try:
+        new_limit = int(message.text)
+        if new_limit > 0:
+            cursor.execute('UPDATE users SET daily_limit = ? WHERE user_id = ?', 
+                         (new_limit, user_id))
+            conn.commit()
+            bot.reply_to(message, f"Новый лимит установлен: {new_limit} ккал")
+        else:
+            bot.reply_to(message, "Лимит должен быть положительным числом")
+    except ValueError:
+        bot.reply_to(message, "Пожалуйста, введи число")
 
 # Запуск бота
-print(" bot") 
-bot.polling(none_stop=True)
+bot.polling()
