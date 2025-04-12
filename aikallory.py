@@ -5,8 +5,9 @@ import json
 import os
 
 # Токен твоего бота от BotFather
-BOT_TOKEN = "7771305300:AAHgd-M-EYmL3kq9XSn3dHTDDNNkhOWaUhU"
-# Твой ключ от OpenRouter
+API_TOKEN = "7771305300:AAHgd-M-EYmL3kq9XSn3dHTDDNNkhOWaUhU"
+bot = telebot.TeleBot(API_TOKEN)
+
 # Ключ для OpenRouter
 OPENROUTER_API_KEY = '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'
 
