@@ -1,41 +1,30 @@
 import telebot
-from telebot import types
 import requests
 import json
+from datetime import datetime, date
 import os
 
-# Токен твоего бота от BotFather
-API_TOKEN = "7771305300:AAHgd-M-EYmL3kq9XSn3dHTDDNNkhOWaUhU"
+# Инициализация бота
+API_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'  # Замените на ваш токен Telegram бота
 bot = telebot.TeleBot(API_TOKEN)
 
 # Ключ для OpenRouter
 OPENROUTER_API_KEY = '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'
 
-# Подключение к базе данных SQLite
-conn = sqlite3.connect('calorie_tracker.db', check_same_thread=False)
-cursor = conn.cursor()
+# Путь к JSON-файлу для хранения данных
+DATA_FILE = 'calorie_tracker.json'
 
-# Создание таблиц
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        daily_limit INTEGER DEFAULT 1200,
-        current_date TEXT
-    )
-''')
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS food_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        date TEXT,
-        food_name TEXT,
-        calories INTEGER,
-        protein INTEGER,
-        fat INTEGER,
-        carbs INTEGER
-    )
-''')
-conn.commit()
+# Функция для загрузки данных из JSON
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {"users": {}}
+
+# Функция для сохранения данных в JSON
+def save_data(data):
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
 
 # Функция для получения текущей даты
 def get_current_date():
@@ -43,28 +32,33 @@ def get_current_date():
 
 # Функция для проверки и обновления даты
 def check_and_reset_date(user_id):
-    cursor.execute('SELECT current_date FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
+    data = load_data()
     current_date = get_current_date()
+    user_id = str(user_id)  # Ключи в JSON — строки
     
-    if result is None:
-        cursor.execute('INSERT INTO users (user_id, current_date) VALUES (?, ?)', 
-                      (user_id, current_date))
-        conn.commit()
-    elif result[0] != current_date:
-        cursor.execute('UPDATE users SET current_date = ?, daily_limit = 1200 WHERE user_id = ?', 
-                      (current_date, user_id))
-        cursor.execute('DELETE FROM food_log WHERE user_id = ? AND date != ?', 
-                      (user_id, current_date))
-        conn.commit()
+    if user_id not in data["users"]:
+        data["users"][user_id] = {
+            "daily_limit": 1200,
+            "current_date": current_date,
+            "food_log": []
+        }
+    elif data["users"][user_id]["current_date"] != current_date:
+        data["users"][user_id]["current_date"] = current_date
+        data["users"][user_id]["food_log"] = []  # Сброс лога за новый день
+        data["users"][user_id]["daily_limit"] = 1200  # Сброс лимита
+    
+    save_data(data)
+    return data
 
 # Функция для получения текущего потребления калорий
 def get_daily_calories(user_id):
-    current_date = get_current_date()
-    cursor.execute('SELECT SUM(calories) FROM food_log WHERE user_id = ? AND date = ?', 
-                  (user_id, current_date))
-    result = cursor.fetchone()
-    return result[0] if result[0] is not None else 0
+    data = load_data()
+    user_id = str(user_id)
+    if user_id not in data["users"]:
+        return 0
+    
+    total_calories = sum(item["calories"] for item in data["users"][user_id]["food_log"])
+    return total_calories
 
 # Функция для запроса к OpenRouter
 def get_food_info(food_name):
@@ -88,7 +82,6 @@ def get_food_info(food_name):
     if response.status_code == 200:
         data = response.json()
         try:
-            # Предполагаем, что ответ приходит в формате JSON внутри content
             content = json.loads(data['choices'][0]['message']['content'])
             return content
         except:
@@ -108,8 +101,8 @@ def send_welcome(message):
     markup.add(btn1, btn2)
     
     daily_calories = get_daily_calories(user_id)
-    cursor.execute('SELECT daily_limit FROM users WHERE user_id = ?', (user_id,))
-    limit = cursor.fetchone()[0]
+    data = load_data()
+    limit = data["users"][str(user_id)]["daily_limit"]
     
     bot.reply_to(message, 
                 f"Сегодня ты съел: {daily_calories} ккал (из {limit} ккал)",
@@ -121,8 +114,8 @@ def handle_text(message):
     user_id = message.from_user.id
     check_and_reset_date(user_id)
     
-    cursor.execute('SELECT daily_limit FROM users WHERE user_id = ?', (user_id,))
-    limit = cursor.fetchone()[0]
+    data = load_data()
+    limit = data["users"][str(user_id)]["daily_limit"]
     
     if message.text == "Можно":
         bot.reply_to(message, "Напиши, что ты съел")
@@ -148,17 +141,23 @@ def add_food(message):
         fat = food_info['ж']
         carbs = food_info['у']
         
-        # Сохранение в базу
-        cursor.execute('''
-            INSERT INTO food_log (user_id, date, food_name, calories, protein, fat, carbs)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, current_date, food_name, calories, protein, fat, carbs))
-        conn.commit()
+        # Сохранение в JSON
+        data = load_data()
+        user_id = str(user_id)
+        food_entry = {
+            "date": current_date,
+            "food_name": food_name,
+            "calories": calories,
+            "protein": protein,
+            "fat": fat,
+            "carbs": carbs
+        }
+        data["users"][user_id]["food_log"].append(food_entry)
+        save_data(data)
         
         # Проверка лимита
         daily_calories = get_daily_calories(user_id)
-        cursor.execute('SELECT daily_limit FROM users WHERE user_id = ?', (user_id,))
-        limit = cursor.fetchone()[0]
+        limit = data["users"][user_id]["daily_limit"]
         
         response = f"Добавлено: {food_name}\n"
         response += f"Калории: {calories} ккал\n"
@@ -180,9 +179,9 @@ def set_new_limit(message):
     try:
         new_limit = int(message.text)
         if new_limit > 0:
-            cursor.execute('UPDATE users SET daily_limit = ? WHERE user_id = ?', 
-                         (new_limit, user_id))
-            conn.commit()
+            data = load_data()
+            data["users"][str(user_id)]["daily_limit"] = new_limit
+            save_data(data)
             bot.reply_to(message, f"Новый лимит установлен: {new_limit} ккал")
         else:
             bot.reply_to(message, "Лимит должен быть положительным числом")
